@@ -9,14 +9,14 @@ class Livraison(BaseModel):
 
     model_config = ConfigDict(extra="forbid")  # un champ inconnu est refusé (422)
 
-    # Le premier champ est donné. À VOUS : écrire les 6 autres, avec des bornes réalistes.
-    distance_km: float = Field(ge=1, le=1000, description="Distance du trajet (km)")
-    # poids_kg        : float  (kg)
-    # heure_depart    : int    (0 à 23)
-    # pluie_mm        : float  (mm)
-    # trafic_index    : float  (0 = fluide, 10 = saturé)
-    # nb_arrets       : int
-    # type_vehicule   : Literal["moto", "fourgon", "camion"]
+    # Les 7 variables du contrat avec types et bornes physiques réalistes
+    distance_km: float = Field(ge=1.0, le=1000.0, allow_inf_nan=False, description="Distance du trajet (km)")
+    poids_kg: float = Field(ge=0.1, le=3500.0, allow_inf_nan=False, description="Poids transporté (kg)")
+    heure_depart: int = Field(ge=0, le=23, description="Heure de départ (0 à 23)")
+    pluie_mm: float = Field(ge=0.0, le=100.0, allow_inf_nan=False, description="Précipitations prévues sur le trajet (mm)")
+    trafic_index: float = Field(ge=0.0, le=10.0, allow_inf_nan=False, description="Indice de trafic (0 = fluide, 10 = saturé)")
+    nb_arrets: int = Field(ge=0, le=30, description="Nombre d'arrêts de livraison prévus")
+    type_vehicule: Literal["moto", "fourgon", "camion"] = Field(description="Type de véhicule ('moto', 'fourgon' ou 'camion')")
 
 
 class PredictionOut(BaseModel):
