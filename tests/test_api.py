@@ -85,3 +85,70 @@ def test_modele_absent_renvoie_503():
     with TestClient(app) as client:
         state.pop("predictor", None)  # on simule un modèle non chargé
         assert post(client).status_code == 503
+
+
+def test_heure_depart_hors_limites_refusee():
+    with TestClient(app) as client:
+        assert post(client, heure_depart=-1).status_code == 422
+        assert post(client, heure_depart=24).status_code == 422
+        assert post(client, heure_depart=8.5).status_code == 422
+
+
+def test_trafic_index_hors_limites_refuse():
+    with TestClient(app) as client:
+        assert post(client, trafic_index=-0.1).status_code == 422
+        assert post(client, trafic_index=10.5).status_code == 422
+
+
+def test_poids_invalide_refuse():
+    with TestClient(app) as client:
+        assert post(client, poids_kg=-5.0).status_code == 422
+        assert post(client, poids_kg=0.0).status_code == 422
+
+
+def test_nb_arrets_invalide_refuse():
+    with TestClient(app) as client:
+        assert post(client, nb_arrets=-1).status_code == 422
+        assert post(client, nb_arrets=2.5).status_code == 422
+
+
+def test_coherence_alerte_et_seuil_sur_requete_reelle():
+    with TestClient(app) as client:
+        data = post(client).json()
+        assert data["alerte"] == (data["probabilite_retard"] >= data["seuil"])
+
+
+def test_seuil_alerte_cas_controles_autour_du_seuil():
+    class MockPredictor:
+        def __init__(self, proba: float):
+            self.proba = proba
+            self.version = "test-mock"
+            self.threshold = 0.4
+
+        def predict(self, features: dict) -> dict:
+            return {
+                "probabilite_retard": self.proba,
+                "alerte": self.proba >= self.threshold,
+                "seuil": self.threshold,
+                "model_version": self.version,
+            }
+
+    with TestClient(app) as client:
+        # Cas 1 : probabilité à 0.39 (< 0.40) -> pas d'alerte
+        state["predictor"] = MockPredictor(0.39)
+        res_39 = post(client).json()
+        assert res_39["probabilite_retard"] == 0.39
+        assert res_39["alerte"] is False
+
+        # Cas 2 : probabilité à 0.40 (seuil exact) -> alerte
+        state["predictor"] = MockPredictor(0.40)
+        res_40 = post(client).json()
+        assert res_40["probabilite_retard"] == 0.40
+        assert res_40["alerte"] is True
+
+        # Cas 3 : probabilité à 0.41 (> 0.40) -> alerte
+        state["predictor"] = MockPredictor(0.41)
+        res_41 = post(client).json()
+        assert res_41["probabilite_retard"] == 0.41
+        assert res_41["alerte"] is True
+
