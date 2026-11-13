@@ -1,4 +1,5 @@
 """Charge le modèle sauvegardé et prédit pour une livraison."""
+
 import json
 from pathlib import Path
 

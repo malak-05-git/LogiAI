@@ -1,269 +1,344 @@
-# Compte Rendu : TP API LogiAI (Atelier 3)
+# Compte Rendu : Tester, sécuriser et appeler l'API LogiAI (Atelier 4)
 
-**Module :** Développement et déploiement d’applications intelligentes  
-**Encadrante :** Mme Soukaina Gouraguine  
-**Année universitaire :** 2026-2027  
-**Étudiantes :** Malak Moukhliss & Binôme  
-**Groupe :** IA & Big Data  
-
----
-
-## 1. Contexte, Objectifs & Architecture
-
-### 1.1 Contexte du projet
-Le projet **LogiAI** vise à industrialiser un modèle de Machine Learning prédisant le risque de retard de livraisons sous la forme d'un service web RESTful avec **FastAPI**, interrogeable par des applications tierces (notamment un client interactif **Streamlit**).
-
-### 1.2 Architecture globale de l'application
-Le projet respecte une architecture modulaire et découplée :
-- `logiai/config.py` : Configuration centralisée des chemins, des hyperparamètres, des variables explicatives et du seuil d'alerte (`0.4`).
-- `logiai/dataset.py` : Génération et préparation des données de livraison synthétiques (`data/livraisons.csv`).
-- `logiai/train.py` : Pipeline d'entraînement scikit-learn (`StandardScaler` + `OneHotEncoder` + `LogisticRegression`) et sérialisation du modèle (`models/model.joblib`).
-- `logiai/predict.py` : Module de prédiction encapsulant le chargement du pipeline et le calcul de la probabilité de retard.
-- `logiai/api/schemas.py` : Contrats de données Pydantic v2 (`Livraison` en entrée avec validation stricte, `PredictionOut` en sortie).
-- `logiai/api/main.py` : Point d'entrée de l'API FastAPI avec gestion de cycle de vie `lifespan` et routes `/health` et `/v1/predict`.
-- `app_streamlit.py` : Interface utilisateur web pour la saisie interactive des paramètres et l'affichage des alertes.
-- `tests/test_api.py` : Suite de tests automatisés validant la conformité de l'API sous différents scénarios avec `pytest` et `TestClient`.
-
-### 1.3 Technologies utilisées
-| Technologie | Version | Rôle |
-|---|---|---|
-| **FastAPI** | >= 0.110 | Framework web asynchrone haute performance pour l'API REST |
-| **Uvicorn** | >= 0.29 | Serveur ASGI d'exécution pour FastAPI |
-| **Pydantic** | >= 2.6 | Validation des types, des bornes métiers et génération du schéma OpenAPI |
-| **Scikit-learn** | >= 1.4 | Entraînement du pipeline de régression logistique |
-| **Pandas / NumPy** | >= 2.0 / >= 1.26 | Traitement et manipulation des données matricielles |
-| **Joblib** | >= 1.3 | Sérialisation et chargement rapide du pipeline entraîné |
-| **Pytest / HTTPX** | >= 8.0 / >= 0.27 | Tests unitaires et d'intégration HTTP |
-| **Streamlit** | >= 1.35 | Interface graphique utilisateur pour les démonstrations |
+**Module :** Développement et déploiement d'applications intelligentes  
+**Encadrante :** Pr. Soukaina Gouraguine  
+**Année universitaire :** 2026 - 2027  
+**Auteur :** Malak Moukhliss  
+**Classe :** 5ème année Ingénierie IA & Big Data  
+**Projet :** LogiAI — Atelier 4 : Tests automatisés (Pytest), validation Pydantic, clés API & rôles, CORS et client Web Fetch  
 
 ---
 
-## 2. Environnement et premiers tests
+## 1. Introduction et Objectifs de l'Atelier 4
 
-### Sortie de `python -m pytest` au départ (diagnostic initial)
+Dans la continuité de l'Atelier 3 où le modèle de Machine Learning a été exposé sous la forme d'un service web RESTful avec FastAPI, l'**Atelier 4** a pour mission d'industrialiser, fiabiliser et sécuriser l'API **LogiAI**.
+
+Les objectifs pédagogiques et techniques sont organisés en quatre axes majeurs :
+1. **Robustesse et validation stricte (Activités 1 & 2) :** Éprouver l'API avec des scénarios de requêtes malformées (`TestClient`), traquer les anomalies aux limites des données (`@pytest.mark.parametrize`) et corriger les bugs de spécification dans les schémas Pydantic v2.
+2. **Contrôle d'accès et sécurité (Sprint 1) :** Mettre en œuvre une authentification par clé API via l'en-tête HTTP `X-API-Key`, établir une hiérarchie de privilèges (rôle standard `user` vs rôle privilégié `admin`), et neutraliser les attaques temporelles (*timing attacks*) via `secrets.compare_digest`.
+3. **Cloisonnement des secrets et principe Twelve-Factor App :** Isoler les informations sensibles dans un fichier `.env` local, documenter le contrat de configuration avec `.env.example`, et garantir l'étanchéité du versionnement Git via `.gitignore`.
+4. **Régulation CORS et client frontend (Sprint 2) :** Mettre en place `CORSMiddleware` pour restreindre les origines de navigateurs autorisées (`http://localhost:5500`), développer une interface web interactive en HTML5/JavaScript moderne (`fetch`), gérer ergonomiquement les retours d'erreurs (401, 403, 422, 503) et analyser les limites de la visibilité des secrets côté client.
+
+---
+
+## 2. Diagnostic initial : l'API ouverte à tous (Le problème de départ)
+
+À l'issue de l'Atelier 3, l'API LogiAI répondait parfaitement aux requêtes nominales. Cependant, un audit de sécurité initial révèle une faille critique : **l'API est entièrement ouverte sans aucun contrôle d'identité ni de provenance**.
+
+Une simple requête transmise via `curl` sans aucune clé ni en-tête d'authentification reçoit immédiatement une réponse favorable HTTP 200 :
+
+```bash
+curl.exe -i -X POST http://localhost:8000/v1/predict \
+  -H "Content-Type: application/json" \
+  -d '{"distance_km": 120.0, "poids_kg": 450.0, "heure_depart": 17, "pluie_mm": 8.0, "trafic_index": 7.5, "nb_arrets": 4, "type_vehicule": "camion"}'
+```
+
+```http
+HTTP/1.1 200 OK
+content-type: application/json
+
+{"probabilite_retard":0.732,"alerte":true,"seuil":0.4,"model_version":"1.0"}
+```
+
+De même, l'endpoint d'administration `GET /v1/model-info`, qui divulgue des informations internes sensibles sur le pipeline de Machine Learning (version sérialisée, seuil de classification, liste des features exploitées), était accessible publiquement sans restriction. N'importe quel client pouvait saturer les ressources du serveur ou aspirer des données internes. Ce constat justifie la mise en œuvre impérative d'un système d'authentification et d'autorisation.
+
+---
+
+## 3. Activité 1 : Casser son API (5 scénarios de requêtes invalides)
+
+Pour tester la résilience du backend face à des saisies accidentelles ou malveillantes, nous avons conçu 5 scénarios d'invalidation automatisés avec `FastAPI TestClient` et `@pytest.mark.parametrize` dans `tests/test_casser.py`.
+
+### Tableau des 5 scénarios de requêtes invalides :
+
+| Cas testé | Requête (URL et charge utile) | Code HTTP prévu | Code HTTP obtenu | Justification technique |
+|---|---|---|---|---|
+| **1. Champ manquant** | `POST /v1/predict`<br>`{...VALID sans "poids_kg"}` | **422** | **422 Unprocessable Entity** | Pydantic détecte l'absence d'un champ obligatoire du modèle `Livraison`. |
+| **2. Valeur absurde** | `POST /v1/predict`<br>`{...VALID, "poids_kg": 99999}` | **422** | **422 Unprocessable Entity** | La valeur viole la contrainte de borne supérieure `le=3500`. |
+| **3. Texte au lieu d'un nombre** | `POST /v1/predict`<br>`{...VALID, "distance_km": "beaucoup"}` | **422** | **422 Unprocessable Entity** | Échec de conversion de type (`float` attendu). |
+| **4. Champ en trop** | `POST /v1/predict`<br>`{...VALID, "remise": 10}` | **422** | **422 Unprocessable Entity** | Refusé grâce à `model_config = ConfigDict(extra="forbid")`. |
+| **5. Mauvaise route** | `POST /v1/inconnue`<br>`{...VALID}` | **404** | **404 Not Found** | Le routeur FastAPI ne trouve aucune correspondance pour cette URL. |
+
+### Code de test paramétré (`tests/test_casser.py`) :
+
+```python
+CAS_REFUSES = [
+    ("valeur absurde", "/v1/predict", {**VALID, "poids_kg": 99999}, 422),
+    ("champ manquant", "/v1/predict", SANS_POIDS, 422),
+    (
+        "texte au lieu d'un nombre",
+        "/v1/predict",
+        {**VALID, "distance_km": "beaucoup"},
+        422,
+    ),
+    ("champ en trop", "/v1/predict", {**VALID, "remise": 10}, 422),
+    ("mauvaise route", "/v1/inconnue", VALID, 404),
+]
+
+
+@pytest.mark.parametrize("description, url, corps, attendu", CAS_REFUSES)
+def test_requete_refusee(client, headers_user, description, url, corps, attendu):
+    assert client.post(url, json=corps, headers=headers_user).status_code == attendu, (
+        description
+    )
+```
+
+---
+
+## 4. Activité 2 : Chasser les 2 bugs de bornes dans les schémas
+
+Le starter contenait 2 bugs volontaires dans les définitions de contraintes Pydantic de `logiai/api/schemas.py`. L'écriture de 29 tests systématiques aux bornes (valeur juste à l'intérieur $\rightarrow$ 200, valeur juste à l'extérieur $\rightarrow$ 422) dans `tests/test_limites.py` a permis d'isoler ces anomalies :
+
+### Tableau de découverte et correction des bugs :
+
+| Bug identifié | Test qui l'a révélé | Comportement avant (Starter) | Correction apportée (`schemas.py`) |
+|---|---|---|---|
+| **Bug 1 : `heure_depart`** | `test_valeurs_limites[heure_depart-24-422]` | **Code 200 retourné** pour `heure_depart = 24`. La contrainte était `le=24`. Or, les heures d'une journée vont de 0 à 23. | `heure_depart: int = Field(ge=0, le=23, description="Heure de départ (0 à 23)")` |
+| **Bug 2 : `nb_arrets`** | `test_valeurs_limites[nb_arrets--1-422]` | **Code 200 retourné** pour `nb_arrets = -1`. Aucune borne inférieure n'était définie (`le=15` seul). Un nombre d'arrêts négatif n'a aucun sens physique. | `nb_arrets: int = Field(ge=0, le=15, description="Nombre d'arrêts de livraison")` |
+
+### Cas de l'heure décimale (`heure_depart = 11.5`) :
+Un test dédié aux nombres à virgule a été intégré :
+```python
+(("heure_depart", 11.5, 422),)
+```
+*Comportement vérifié :* Pydantic v2 applique une validation de type stricte sur `int` et rejette `11.5` avec le code HTTP **422 Unprocessable Entity** (`Input should be a valid integer, got a number with a fractional part`).
+
+---
+
+## 5. Sprint 1 : Authentification par clé API et gestion des rôles
+
+### A. Implémentation dans `logiai/api/security.py`
+
+Le mécanisme d'authentification et de contrôle d'accès repose sur l'injection de dépendances (`FastAPI Depends`) et le module standard de cryptographie `secrets` :
+
+```python
+def _egal(a: str | None, b: str | None) -> bool:
+    """Comparaison en temps constant. Une clé non configurée n'est jamais valide."""
+    if not a or not b:
+        return False
+    return secrets.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
+def verify_api_key(x_api_key: str | None = Header(default=None)) -> str:
+    """Authentification : valide la clé d'API et retourne le rôle ('admin' ou 'user')."""
+    if not x_api_key:
+        raise HTTPException(
+            status_code=401,
+            detail="Clé API absente. Veuillez fournir l'en-tête X-API-Key.",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+    if _egal(x_api_key, config.ADMIN_KEY):
+        return "admin"
+    if _egal(x_api_key, config.API_KEY):
+        return "user"
+    raise HTTPException(
+        status_code=401,
+        detail="Clé API invalide.",
+        headers={"WWW-Authenticate": "ApiKey"},
+    )
+
+
+def require_admin(role: str = Depends(verify_api_key)) -> str:
+    """Autorisation : restreint l'accès aux utilisateurs ayant le rôle administrateur."""
+    if role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Accès réservé aux administrateurs.",
+        )
+    return role
+```
+
+### B. Protection des endpoints dans `logiai/api/main.py`
+
+* `POST /v1/predict` : protégé par `dependencies=[Depends(verify_api_key)]` (accessible aux rôles `user` et `admin`).
+* `GET /v1/model-info` : protégé par `dependencies=[Depends(require_admin)]` (accessible uniquement au rôle `admin`).
+* `GET /health` : reste **public** pour permettre le probing des orchestrateurs (Kubernetes, AWS ALB, Docker Healthcheck).
+
+### C. Ordre strict des contrôles de sécurité
+L'architecture garantit l'ordre d'évaluation suivant :
+$$\text{Route (404)} \longrightarrow \text{Authentification Clé (401/403)} \longrightarrow \text{Validation Schéma (422)} \longrightarrow \text{Modèle ML (200/503)}$$
+*Preuve concrète :* Une requête soumise sans clé avec un payload invalide (ex: pluie de 500 mm) reçoit immédiatement un code **401 Unauthorized** et non 422, car l'identité est vérifiée avant le traitement de la charge utile.
+
+---
+
+## 6. Configuration des secrets et isolation Git (`.env` & `.gitignore`)
+
+Conformément au standard *Twelve-Factor App (Config)* :
+1. **Fichier modèle `.env.example` :** Versionné dans Git pour documenter les variables nécessaires sans divulguer de secrets :
+   ```env
+   LOGIAI_API_KEY=cle-utilisateur-123
+   LOGIAI_ADMIN_KEY=cle-admin-456
+   ```
+2. **Fichier réel `.env` :** Présent localement, contenant les véritables clés distinctes :
+   ```env
+   LOGIAI_API_KEY=cle-utilisateur-logiai-2026
+   LOGIAI_ADMIN_KEY=cle-admin-logiai-super-secret
+   ```
+3. **Protection Git (`.gitignore`) :** La règle `.env` inscrite dans `.gitignore` empêche tout archivage accidentel dans le dépôt.
+
+### Preuve par `git status --ignored` :
+```powershell
+$ git status --ignored
+On branch tp-securite
+Ignored files:
+  (use "git add -f <file>..." to include in what will be committed)
+	.env
+	.venv/
+	.pytest_cache/
+```
+Le fichier `.env` apparaît strictement dans la section des fichiers ignorés.
+
+---
+
+## 7. Tests automatisés de sécurité (`tests/test_securite.py`)
+
+Les 11 scénarios de sécurité sont validés avec succès :
+
+| Scénario testé | Endpoint | En-tête X-API-Key | Code HTTP obtenu | Diagnostic |
+|---|---|---|---|---|
+| **1. Endpoint health public** | `/health` | *Aucun* | **200 OK** | Supervision opérationnelle sans secret |
+| **2. Prédiction sans clé** | `/v1/predict` | *Aucun* | **401 Unauthorized** | Accès bloqué avec message explicite |
+| **3. Prédiction fausse clé** | `/v1/predict` | `mauvaise-cle` | **401 Unauthorized** | Échec de comparaison à temps constant |
+| **4. Prédiction clé vide** | `/v1/predict` | `""` | **401 Unauthorized** | Clé vide immédiatement rejetée |
+| **5. Prédiction clé utilisateur** | `/v1/predict` | Clé user valide | **200 OK** | Inférence ML autorisée |
+| **6. Prédiction clé admin** | `/v1/predict` | Clé admin valide | **200 OK** | Inférence ML autorisée pour l'admin |
+| **7. Métadonnées sans clé** | `/v1/model-info` | *Aucun* | **401 Unauthorized** | Authentification préalable requise |
+| **8. Métadonnées clé utilisateur** | `/v1/model-info` | Clé user valide | **403 Forbidden** | Rôle `user` insuffisant |
+| **9. Métadonnées clé admin** | `/v1/model-info` | Clé admin valide | **200 OK** | Métadonnées délivrées |
+| **10. Non-dévoilement du secret** | `/v1/predict` | `mauvaise-cle` | **401 Unauthorized** | Les clés configurées ne figurent pas dans la réponse 401 |
+| **11. Variables non configurées** | `/v1/predict` | Clé quelconque | **401 Unauthorized** | Si `API_KEY=None`, tout accès protégé est refusé |
+
+---
+
+## 8. Sprint 2 : Configuration CORS et Interface Web
+
+### A. Configuration CORS dans `logiai/api/main.py`
+```python
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=config.ALLOWED_ORIGINS,  # ["http://localhost:5500", "http://127.0.0.1:5500"]
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "X-API-Key"],
+)
+```
+*Justification technique :* L'utilisation du joker `*` a été rejetée pour prévenir les attaques CSRF et interdire aux sites tiers d'appeler l'API en tâche de fond depuis le navigateur de l'utilisateur.
+
+### B. Client Web Frontend (`web/index.html`)
+L'interface web permet à un opérateur de renseigner les paramètres d'une course et sa clé d'API.
+
+#### Fonction d'appel asynchrone (`fetch`) :
+```javascript
+async function appelerApi(livraison, cle) {
+  const reponse = await fetch("http://localhost:8000/v1/predict", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-Key": cle,
+    },
+    body: JSON.stringify(livraison),
+  });
+  const corps = await reponse.json();
+  return { status: reponse.status, corps };
+}
+```
+
+#### Améliorations ergonomiques intégrées :
+1. **Désactivation du bouton et indicateur de chargement :** Le bouton d'évaluation passe à l'état désactivé (`bouton.disabled = true`) avec le message *« Calcul en cours… »* pendant la durée de la requête, puis est réactivé dans le bloc `finally`.
+2. **Formatage clair des erreurs 422 :** Décomposition du tableau `corps.detail` pour afficher chaque champ erroné et la contrainte enfreinte (ex: `pluie_mm : Input should be less than or equal to 100`).
+3. **Gestion des pannes et erreurs réseau :** Un bloc `catch` intercepte les interruptions de serveur ou les blocages CORS et affiche une consigne claire invitant à vérifier Uvicorn et la console F12.
+4. **Restitution lisible du verdict ML :** Affichage en pourcentage avec coloration contextuelle (vert pour `ok`, orange/gras pour `alerte`).
+
+### C. Expérience comparative CORS (Port 5500 vs Port 5501)
+* **Test sur le port 5500 (Origine autorisée) :**  
+  La requête prévol `OPTIONS` retourne `HTTP 200 OK` avec l'en-tête `Access-Control-Allow-Origin: http://localhost:5500`. La prédiction s'affiche correctement sur la page :  
+  `Probabilité de retard : 73.2 %. Alerte : livraison à risque.`
+* **Test sur le port 5501 (Origine non autorisée) :**  
+  La requête prévol `OPTIONS` échoue avec `HTTP 400 Bad Request` sans en-tête d'autorisation. Le navigateur bloque immédiatement la réponse et la console F12 consigne l'erreur :  
+  `Access to fetch at 'http://localhost:8000/v1/predict' from origin 'http://localhost:5501' has been blocked by CORS policy: No 'Access-Control-Allow-Origin' header is present on the requested resource.`
+* **Pourquoi `curl` fonctionne-t-il quand même ?**  
+  CORS est une politique de sécurité implémentée et appliquée **exclusivement par le moteur d'un navigateur web** (*Same-Origin Policy*). Le serveur traite la requête quel que soit le client. Mais sans l'accord CORS, le navigateur refuse de transmettre la réponse au JavaScript de la page. `curl` n'étant pas un navigateur, il ignore la politique CORS et reçoit la réponse 200. **CORS n'est donc pas une authentification de l'API, d'où la nécessité de la clé API.**
+
+### D. Visibilité de la clé dans F12 et risque d'exposition côté client
+* Dans l'inspecteur web (F12) > Onglet **Réseau (Network)** > Requête `predict` > Sous-onglet **Headers**, la clé apparaît en clair : `X-API-Key: cle-utilisateur-logiai-2026`.
+* **Conséquence sécuritaire majeure :** Tout secret stocké ou manipulé côté client dans un navigateur (dans le code JavaScript, dans le LocalStorage ou saisi dans un champ) est extractible par l'utilisateur ou par des scripts tiers (XSS). En production, un frontend public ne doit jamais détenir directement de clé d'API backend : on interpose une architecture **BFF (Backend-for-Frontend)** ou une authentification utilisateur par session sécurisée avec cookie `HttpOnly` et jetons éphémères.
+
+---
+
+## 9. Architecture Decision Record (ADR 003)
+
+Le document formalisé dans `docs/adr/003-securite.md` consigne deux arbitrages structurants :
+
+### Décision 1 : En-tête HTTP `X-API-Key` vs Clé dans l'URL vs Clé dans le corps JSON
+* **Décision retenue :** En-tête HTTP dédié `X-API-Key`.
+* **Rejet de la clé dans l'URL (`?api_key=...`) :** Les URL complètes sont enregistrées en clair dans les journaux d'accès des serveurs (access logs), des proxys inverses, des CDN et dans l'historique du navigateur. Elles peuvent également fuiter via l'en-tête `Referer`.
+* **Rejet de la clé dans le corps JSON :** La spécification HTTP (RFC 7231) proscrit les corps de requêtes pour les méthodes `GET` (comme `GET /v1/model-info`). De plus, mélanger le secret d'authentification avec les attributs de la classe métier `Livraison` viole le principe de séparation des responsabilités.
+
+### Décision 2 : Liste blanche stricte d'origines CORS vs Joker Wildcard `*`
+* **Décision retenue :** Liste blanche restreinte `["http://localhost:5500", "http://127.0.0.1:5500"]`.
+* **Rejet du wildcard `*` :** Autoriser `*` permettrait à n'importe quel site internet malveillant visité par un opérateur de déclencher des appels API frauduleux en arrière-plan depuis son navigateur.
+
+---
+
+## 10. Contrôle qualité du code (Ruff) et validation des tests (Pytest)
+
+### A. Audit statique de code avec Ruff :
+
+```powershell
+$ ruff check .
+All checks passed!
+
+$ ruff format --check .
+19 files already formatted
+```
+Le code source est conforme aux standards de formatage PEP 8, exempt d'imports inutilisés, de variables orphelines et d'anomalies syntaxiques.
+
+### B. Bilan global de la suite de tests Pytest (53 tests réussis) :
+
 ```text
 ============================= test session starts =============================
 platform win32 -- Python 3.11.0, pytest-9.2.0, pluggy-1.7.0
 rootdir: C:\Users\DELL\Downloads\starter-20261028T092813Z-1-001\starter
 plugins: anyio-4.15.1
-collected 13 items
+collected 53 items
 
-tests\test_api.py ..FFFF......F                                          [100%]
+tests\test_api.py ........                                               [ 15%]
+tests\test_casser.py .....                                               [ 24%]
+tests\test_limites.py .............................                      [ 79%]
+tests\test_securite.py ...........                                       [100%]
 
-=========================== short test summary info ===========================
-FAILED tests/test_api.py::test_predict_valide_renvoie_200 - assert 422 == 200
-FAILED tests/test_api.py::test_predict_forme_de_la_reponse - AssertionError
-FAILED tests/test_api.py::test_predict_probabilite_entre_0_et_1 - KeyError: 'probabilite_retard'
-FAILED tests/test_api.py::test_predict_trajet_risque_plus_eleve_que_trajet_facile - KeyError: 'probabilite_retard'
-FAILED tests/test_api.py::test_modele_absent_renvoie_503 - assert 422 == 503
-=================== 5 failed, 8 passed, 1 warning in 17.42s ===================
-```
-
-### Pourquoi certains tests qui attendent un 422 passent-ils déjà, alors que rien n'est écrit ?
-Dans le code de départ, le schéma Pydantic `Livraison` ne contenait qu'un seul champ déclaré (`distance_km`) et était configuré avec `model_config = ConfigDict(extra="forbid")`.  
-Lors des tests envoyant un payload complet (contenant `poids_kg`, `type_vehicule="avion"`, `pluie_mm=500`, etc.), Pydantic rejetait systématiquement la requête avec un code **HTTP 422** en indiquant que ces champs étaient des champs non autorisés (*extra fields not permitted*).  
-Ainsi, les tests qui attendaient une erreur 422 pour véhicule inconnu ou pluie impossible passaient par "accident" (faux succès), car la validation métier n'était pas encore active : le rejet provenait uniquement de l'absence de déclaration des champs dans le schéma.
-
----
-
-## 3. Schéma Pydantic et Validation Métier
-
-### Tableau des bornes et justification physique
-
-| Variable | Type | Min | Max | Justification physique et métier |
-|---|---|---|---|---|
-| `distance_km` | `float` | 1.0 | 1000.0 | Distance d'une course de livraison : minimum 1 km (course urbaine locale) et maximum 1 000 km (trajet routier longue distance national). |
-| `poids_kg` | `float` | 0.1 | 3500.0 | Masse transportée : minimum 100 g (pli ou petit paquet) et maximum 3,5 tonnes (charge utile légale maximale d'un véhicule utilitaire léger ou porteur urbain). |
-| `heure_depart` | `int` | 0 | 23 | Heure de début de la tournée sur l'échelle des 24 heures d'une journée civile (format entier 0 à 23). |
-| `pluie_mm` | `float` | 0.0 | 100.0 | Précipitations mesurées sur l'itinéraire : 0 mm pour un temps sec ; 100 mm correspond au seuil de pluie torrentielle / vigilance inondation extrême. |
-| `trafic_index` | `float` | 0.0 | 10.0 | Indice d'encombrement routier normalisé de 0 (circulation parfaitement fluide) à 10 (saturation totale / blocage complet du trafic). |
-| `nb_arrets` | `int` | 0 | 30 | Nombre d'arrêts de livraison intermédiaires, borné entre 0 (trajet direct point à point) et 30 arrêts (capacité maximale raisonnable d'une tournée journalière). |
-| `type_vehicule` | `Literal` | - | - | Restreint strictement aux trois modes de transport supportés : `"moto"`, `"fourgon"`, `"camion"`. |
-
-Tous les champs numériques flottants sont protégés par `allow_inf_nan=False` afin de refuser formellement les valeurs `NaN` et infinies. Les champs entiers (`heure_depart`, `nb_arrets`) interdisent les valeurs fractionnaires (par exemple `8.5`).
-
----
-
-## 4. Implémentation de la fonction `predict()`
-
-```python
-@app.post("/v1/predict", response_model=PredictionOut)
-def predict(livraison: Livraison):
-    # 1. Récupération du predictor instancié au démarrage dans l'état partagé
-    predictor = state.get("predictor")
-    
-    # 2. Gestion de l'indisponibilité du modèle (HTTP 503)
-    if predictor is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Modèle de prédiction non disponible. Veuillez vérifier le chargement du modèle.",
-        )
-        
-    # 3. Prédiction et réponse conforme au schéma de sortie
-    result = predictor.predict(livraison.model_dump())
-    return PredictionOut(**result)
+======================= 53 passed, 1 warning in 21.74s ========================
 ```
 
 ---
 
-## 5. Quatre Requêtes de Référence
+## 11. Réponses approfondies aux 5 questions de compréhension
 
-| Requête | Code HTTP obtenu | Explication détaillée |
-|---|---|---|
-| **Livraison normale** (distance 120 km, poids 450 kg, heure 17h, pluie 8 mm, trafic 7.5, 4 arrêts, camion) | **200 OK** | Données parfaitement conformes au schéma Pydantic. Le modèle calcule une probabilité de retard (`0.7320`), déclenchant l'alerte (`alerte: true` car `0.7320 >= 0.4`). |
-| **`distance_km = -5`** | **422 Unprocessable Entity** | Rejet immédiat par Pydantic : la valeur -5 viole la contrainte `ge=1.0` du champ `distance_km`. |
-| **`type_vehicule = "avion"`** | **422 Unprocessable Entity** | Rejet immédiat par Pydantic : `"avion"` n'appartient pas à l'ensemble autorisé `Literal["moto", "fourgon", "camion"]`. |
-| **Modèle absent** (clé `predictor` supprimée de `state` ou modèle non entraîné) | **503 Service Unavailable** | L'API intercepte l'absence du prédicteur en mémoire et retourne une erreur 503 explicite sans provoquer de crash du serveur. |
+### 1. Quelle différence entre 401, 403 et 422 ?
+* **HTTP 401 Unauthorized :** Erreur d'**authentification** (*« Qui êtes-vous ? »*). L'en-tête `X-API-Key` est absent, vide ou contient une clé non reconnue par le serveur.
+* **HTTP 403 Forbidden :** Erreur d'**autorisation** (*« Avez-vous les droits ? »*). L'identité de l'appelant est validée avec succès, mais le rôle attribué ne possède pas les privilèges requis pour accéder à la ressource demandée (ex: clé avec rôle `user` interrogeant `GET /v1/model-info` réservé au rôle `admin`).
+* **HTTP 422 Unprocessable Entity :** Erreur de **validation des données** (*« Les données violent le contrat »*). Le client est correctement authentifié et autorisé, mais le contenu de la requête viole les contraintes définies dans le modèle Pydantic (borne numérique dépassée, champ requis absent, type incompatible).
 
----
+### 2. Pourquoi la clé n'est-elle ni dans le code ni dans Git ?
+Le code source est partagé au sein des équipes, inspecté par des outils tiers et synchronisé sur des forges logicielles distantes. Si une clé est inscrite dans le code, elle intègre de manière définitive l'historique de Git (le graphe des commits). Même si le fichier est supprimé lors d'un commit ultérieur, le secret demeure extractible par un simple `git log -p`. De plus, des robots automatisés scannent en continu les dépôts GitHub publics pour dérober des identifiants exposés. Isoler les clés dans des variables d'environnement (`.env` local exclu par `.gitignore`) respecte le standard *Twelve-Factor App* et sépare strictement la logique logicielle de la configuration de déploiement.
 
-## 6. Questions de Compréhension
+### 3. Pourquoi comparer avec `compare_digest` plutôt qu'avec `==` ?
+L'opérateur standard d'égalité `==` effectue une comparaison séquentielle avec court-circuit : il s'interrompt dès le premier caractère divergent. Par conséquent, plus le préfixe de la clé soumise est exact, plus la comparaison prend de temps à s'exécuter. Un attaquant peut mesurer ces variations infinitésimales de durée (quelques nanosecondes) pour reconstituer la clé secrète caractère après caractère (*timing attack* ou attaque par canal auxiliaire). La fonction `secrets.compare_digest()` garantit une comparaison en temps constant, quel que soit le contenu des chaînes, neutralisant définitivement ce vecteur d'attaque.
 
-### 1. Pourquoi charge-t-on le modèle au démarrage et pas à chaque requête ?
-Le chargement d'un modèle sérialisé (`model.joblib`) nécessite de lire le fichier sur disque, de désérialiser les objets Python et d'allouer les structures mémoire scikit-learn. Cette opération prend entre 50 et 200 ms.  
-En chargeant le modèle **une seule fois au démarrage** au sein du gestionnaire de cycle de vie `lifespan` de FastAPI :
-- Le modèle reste conservé en mémoire RAM.
-- Le temps de traitement d'une requête de prédiction descend à quelques millisecondes seulement.
-- L'API supporte une charge concurrente bien plus élevée sans saturer les I/O du disque.
+### 4. Pourquoi `curl` fonctionne-t-il alors que la page du port 5501 est bloquée ?
+CORS n'est pas un pare-feu réseau au niveau du serveur, mais une politique de sécurité appliquée **uniquement par le moteur du navigateur web** (*Same-Origin Policy*). Le serveur FastAPI traite la requête et renvoie les données pour les deux clients. Cependant, en l'absence de l'en-tête `Access-Control-Allow-Origin: http://localhost:5501` dans la réponse, le navigateur de la page bloque l'accès aux données par le script JavaScript. `curl` étant un client autonome en ligne de commande, il n'intègre aucun moteur de navigateur et ignore les restrictions CORS.
 
-### 2. Qui écrit le contrôle « pluie <= 100 », et où est-il écrit ?
-C'est le développeur de l'API qui l'écrit dans le schéma Pydantic `Livraison` dans le fichier `logiai/api/schemas.py`, via le paramètre de validation :  
-`pluie_mm: float = Field(ge=0.0, le=100.0, allow_inf_nan=False, description="...")`.  
-FastAPI et Pydantic interceptent et valident automatiquement ce contrôle avant même que la requête n'atteigne le corps de la fonction `predict()`.
-
-### 3. Différence entre 422 et 503 ?
-- **Code 422 (Unprocessable Entity) :** Erreur côté **client**. La requête est bien formée au sens HTTP/JSON, mais son contenu sémantique est invalide au regard des règles métiers (champ manquant, type incorrect, valeur hors bornes). Le client doit rectifier sa saisie.
-- **Code 503 (Service Unavailable) :** Erreur côté **serveur**. La requête du client est parfaitement valide, mais le service backend n'est temporairement pas capable de délivrer le résultat demandé car une ressource essentielle (le modèle ML) n'est pas disponible.
-
-### 4. Pourquoi une route `/v1/predict` plutôt que `/predict` ?
-Le préfixe `/v1/` implémente le principe de **versioning d'API**. Il permet d'assurer la rétrocompatibilité des systèmes clients : si une nouvelle version `/v2/predict` est déployée (avec des variables supplémentaires ou un format différent), les clients existants peuvent continuer à consommer `/v1/predict` sans interruption de service ni régression.
-
-### 5. Que se passerait-il si la distance était déclarée `int` ?
-Si la distance était déclarée `int` :
-- Une requête avec une distance décimale (par exemple `12.5 km`) serait rejetée avec une erreur 422 (`int_from_float`), empêchant la saisie de trajets réalistes.
-- En cas de conversion forcée sans mode strict, la valeur serait tronquée à l'entier inférieur (`12 km`), induisant un biais de calcul dans le modèle de régression logistique qui a été calibré sur une variable continue.
+### 5. Pourquoi la validation faite par le navigateur ne remplace-t-elle pas celle de l'API ?
+La validation côté client (attributs HTML5 `required`, `min`, `max`, scripts JS) n'offre qu'un confort ergonomique pour l'utilisateur en évitant des allers-retours réseau inutiles. Elle n'offre **aucune garantie de sécurité**, car elle est facilement contournable en modifiant le code source dans l'inspecteur du navigateur, en désactivant JavaScript ou en soumettant directement des requêtes forgées via `curl`, `Postman` ou un script Python. Le backend de l'API REST est l'unique garant de l'intégrité des données avant leur injection dans le modèle de Machine Learning.
 
 ---
 
-## 7. Décision Architecturale : Modèle Absent
+## 12. Procédure Git, Pull Request et Tags de rendu
 
-**Répondre 503 ou refuser de démarrer ? Qu'est-ce que chaque option fait perdre ?**
-
-- **Option retenue : Répondre 503 (dégradation gracieuse)**  
-  *Avantages :* L'application web démarre et reste joignable. Les endpoints de supervision comme `/health` restent fonctionnels et indiquent `"model_loaded": false`. La documentation interactive Swagger (`/docs`) reste consultable pour les développeurs.  
-  *Ce que l'on perd :* L'erreur n'est pas bloquante au déploiement (pas de *fail-fast*) : un orchestrateur qui ne surveille que le port HTTP pensera que le pod est prêt, jusqu'à ce que les clients reçoivent des 503.
-- **Option alternative : Refuser de démarrer (*fail-fast* / crash)**  
-  *Avantages :* Détection immédiate du problème lors du déploiement (le conteneur redémarre ou l'orchestrateur refuse la bascule de trafic).  
-  *Ce que l'on perd :* Toute l'API est indisponible (y compris `/health` et `/docs`), empêchant le diagnostic à distance via l'interface web.
-
----
-
-## 8. Résultats des Tests Automatisés
-
-Après implémentation des schémas, de la route de prédiction et ajout des cas de tests étendus (validation fine des heures entières, bornes de trafic, arrêts, cohérence seuil 0.4), la suite complète compte **19 tests**, tous validés avec succès :
-
-```text
-============================= test session starts =============================
-platform win32 -- Python 3.11.0, pytest-9.2.0, pluggy-1.7.0
-rootdir: C:\Users\DELL\Downloads\starter-20261028T092813Z-1-001\starter
-collected 19 items
-
-tests/test_api.py::test_health_repond_ok PASSED                          [  5%]
-tests/test_api.py::test_health_modele_charge PASSED                      [ 10%]
-tests/test_api.py::test_predict_valide_renvoie_200 PASSED                [ 15%]
-tests/test_api.py::test_predict_forme_de_la_reponse PASSED               [ 21%]
-tests/test_api.py::test_predict_probabilite_entre_0_et_1 PASSED          [ 26%]
-tests/test_api.py::test_predict_trajet_risque_plus_eleve_que_trajet_facile PASSED [ 31%]
-tests/test_api.py::test_distance_negative_refusee PASSED                 [ 36%]
-tests/test_api.py::test_pluie_impossible_refusee PASSED                  [ 42%]
-tests/test_api.py::test_vehicule_inconnu_refuse PASSED                   [ 47%]
-tests/test_api.py::test_champ_manquant_refuse PASSED                     [ 52%]
-tests/test_api.py::test_champ_inconnu_refuse PASSED                      [ 57%]
-tests/test_api.py::test_texte_a_la_place_d_un_nombre_refuse PASSED       [ 63%]
-tests/test_api.py::test_modele_absent_renvoie_503 PASSED                 [ 68%]
-tests/test_api.py::test_heure_depart_hors_limites_refusee PASSED         [ 73%]
-tests/test_api.py::test_trafic_index_hors_limites_refuse PASSED          [ 78%]
-tests/test_api.py::test_poids_invalide_refuse PASSED                     [ 84%]
-tests/test_api.py::test_nb_arrets_invalide_refuse PASSED                 [ 89%]
-tests/test_api.py::test_coherence_alerte_et_seuil_sur_requete_reelle PASSED [ 94%]
-tests/test_api.py::test_seuil_alerte_cas_controles_autour_du_seuil PASSED [100%]
-
-======================== 19 passed, 1 warning in 3.65s ========================
-```
-
----
-
-## 9. Métriques du Modèle de Machine Learning
-
-Entraîné via le script `logiai.train` sur les 5 000 données de livraison :
-- **Taux de retard global :** 27.4 %
-- **Baseline accuracy :** 0.726 (72.6 %)
-- **Accuracy du modèle :** 0.774 (77.4 %)
-- **Rappel (Recall) :** 0.464 (46.4 %)
-- **Précision :** 0.617 (61.7 %)
-- **ROC AUC :** 0.769
-
----
-
-## 10. Guide d'Exécution et Démonstration
-
-### 10.1 Installation et Lancement sous Windows PowerShell
-```powershell
-# 1. Se positionner dans le dossier du projet
-cd C:\Users\DELL\Downloads\starter-20261028T092813Z-1-001\starter
-
-# 2. Création et activation de l'environnement virtuel
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-
-# 3. Installation des dépendances
-pip install -r requirements.txt
-
-# 4. Préparation des données et entraînement du modèle
-python -m logiai.dataset
-python -m logiai.train
-
-# 5. Lancement de l'API FastAPI
-python -m uvicorn logiai.api.main:app --reload
-```
-
-### 10.2 Accès à la documentation interactive
-- Swagger UI : [http://localhost:8000/docs](http://localhost:8000/docs)
-- Schéma OpenAPI : [http://localhost:8000/openapi.json](http://localhost:8000/openapi.json)
-
-### 10.3 Lancement du Client Streamlit
-Dans un second terminal PowerShell :
-```powershell
-cd C:\Users\DELL\Downloads\starter-20261028T092813Z-1-001\starter
-.\.venv\Scripts\Activate.ps1
-streamlit run app_streamlit.py
-```
-L'interface s'ouvre automatiquement sur [http://localhost:8501](http://localhost:8501).
-
----
-
-## 11. Captures d'Écran Recommandées pour la Démonstration
-
-Pour le rapport PDF final ou la soutenance, capturer :
-1. **Terminal 1 :** Sortie de `python -m pytest -v` montrant les 19 tests réussis.
-2. **Swagger UI (`/docs`) :** Page principale montrant les endpoints `GET /health` et `POST /v1/predict` avec le schéma `Livraison`.
-3. **Swagger UI :** Exécution interactive d'une requête valide avec réponse 200 et probabilité calculée.
-4. **Interface Streamlit :** Exemple avec livraison à risque élevé (alerte rouge déclenchée, probabilité > 40%).
-5. **Interface Streamlit :** Exemple avec livraison fluide (indicateur vert sans alerte, probabilité < 40%).
-
----
-
-## 12. Répartition du Travail en Binôme
-
-| Membre | Tâches principales réalisées |
-|---|---|
-| **Malak Moukhliss** | - Configuration de l'environnement virtuel et entraînement du modèle ML.<br>- Conception et validation stricte des schémas Pydantic (`logiai/api/schemas.py`).<br>- Développement de la route de prédiction et gestion du code 503 (`logiai/api/main.py`). |
-| **Binôme** | - Rédaction et automatisation des tests pytest (`tests/test_api.py`).<br>- Développement de l'interface utilisateur Streamlit (`app_streamlit.py`).<br>- Rédaction du compte-rendu technique et des justifications physiques. |
-
----
-
-## 13. Dépôt Git & Pull Request
-
-- **Branche de travail :** `tp-api`
-- **Dépôt GitHub :** À renseigner lors de la publication sur le compte GitHub étudiant.
-- **Lien de la Pull Request :** À renseigner lors de l'ouverture de la PR de `tp-api` vers `main`.
+* **Branche de travail :** `tp-securite`
+* **Dépôt GitHub :** `https://github.com/malak-05-git/logiai`
+* **Message de commit standardisé :** `TP sécurité : tests, clé API, page web`
+* **Note sur le tag de rendu :** Le sujet mentionne `tp2` à certains endroits dans les exemples de lignes de commande et `tp4` dans l'énoncé principal et les critères d'évaluation. Il est recommandé de poser le tag `tp4` (Atelier 4) ainsi que `tp2` si nécessaire pour garantir la compatibilité avec toutes les grilles de notation :
+  ```bash
+  git tag tp4
+  git push origin tp4
+  ```
+* **Lien de la Pull Request :** À renseigner lors de l'ouverture de la PR de `tp-securite` vers `main` sur GitHub.

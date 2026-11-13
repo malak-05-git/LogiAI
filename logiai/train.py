@@ -1,4 +1,5 @@
 """Entraîne le modèle et le sauvegarde : python -m logiai.train"""
+
 import json
 
 import joblib
@@ -10,19 +11,32 @@ from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
-from logiai.config import (ALERT_THRESHOLD, CAT_FEATURES, DATA_PATH, FEATURES, INFO_PATH,
-                           MODEL_PATH, NUM_FEATURES, SEED, TARGET)
+from logiai.config import (
+    ALERT_THRESHOLD,
+    CAT_FEATURES,
+    DATA_PATH,
+    FEATURES,
+    INFO_PATH,
+    MODEL_PATH,
+    NUM_FEATURES,
+    SEED,
+    TARGET,
+)
 
 
 def train() -> dict:
     df = pd.read_csv(DATA_PATH)
     X, y = df[FEATURES], df[TARGET]
-    X_tr, X_te, y_tr, y_te = train_test_split(X, y, test_size=0.2, random_state=SEED, stratify=y)
+    X_tr, X_te, y_tr, y_te = train_test_split(
+        X, y, test_size=0.2, random_state=SEED, stratify=y
+    )
 
-    pre = ColumnTransformer([
-        ("num", StandardScaler(), NUM_FEATURES),
-        ("cat", OneHotEncoder(handle_unknown="ignore"), CAT_FEATURES),
-    ])
+    pre = ColumnTransformer(
+        [
+            ("num", StandardScaler(), NUM_FEATURES),
+            ("cat", OneHotEncoder(handle_unknown="ignore"), CAT_FEATURES),
+        ]
+    )
     model = Pipeline([("pre", pre), ("clf", LogisticRegression(max_iter=1000))])
     model.fit(X_tr, y_tr)
 
@@ -38,9 +52,16 @@ def train() -> dict:
 
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, MODEL_PATH)
-    info = {"version": "1.0", "features": FEATURES, "cible": TARGET,
-            "seuil": ALERT_THRESHOLD, "metriques": metrics}
-    INFO_PATH.write_text(json.dumps(info, indent=2, ensure_ascii=False), encoding="utf-8")
+    info = {
+        "version": "1.0",
+        "features": FEATURES,
+        "cible": TARGET,
+        "seuil": ALERT_THRESHOLD,
+        "metriques": metrics,
+    }
+    INFO_PATH.write_text(
+        json.dumps(info, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
     return metrics
 
 

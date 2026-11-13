@@ -1,6 +1,6 @@
-# LogiAI : starter du TP (séance API)
+# LogiAI : starter de la séance « Tester, sécuriser et appeler l'API »
 
-Prédire le risque de retard d'une livraison et l'exposer par une API REST (FastAPI).
+Suite du TP précédent : l'API LogiAI existe. Aujourd'hui vous la testez pour la casser, vous la protégez par une clé, puis une page web l'appelle.
 
 ## Installation (une fois)
 
@@ -8,22 +8,29 @@ Prédire le risque de retard d'une livraison et l'exposer par une API REST (Fast
     .venv\Scripts\activate.bat        # Windows cmd  (PowerShell : .venv\Scripts\Activate.ps1)
     source .venv/bin/activate         # macOS / Linux
     pip install -r requirements.txt
+    python -m logiai.dataset
+    python -m logiai.train
 
-## Données et modèle
+## Vos clés (fichier .env, jamais dans Git)
 
-    python -m logiai.dataset          # écrit data/livraisons.csv
-    python -m logiai.train            # écrit models/model.joblib et models/model_info.json
+    copy .env.example .env            # macOS / Linux : cp .env.example .env
+    # puis ouvrez .env et choisissez vos deux clés
 
-## Lancer l'API
+## Lancer
 
-    python -m uvicorn logiai.api.main:app --reload
-    # puis http://localhost:8000/docs
+    python -m uvicorn logiai.api.main:app --reload          # l'API, port 8000
+    python -m http.server 5500 --directory web              # la page web, dans un 2e terminal
+    # ouvrez http://localhost:5500
 
-## Tests
+## Tester
 
     python -m pytest
 
-## À écrire par vous
+## Où sont les trous (cherchez les TODO)
 
-- `logiai/api/schemas.py` : les 6 champs manquants de `Livraison`
-- `logiai/api/main.py` : le corps de `predict()`
+- `logiai/api/security.py` : deux fonctions à écrire
+- `logiai/api/main.py` : protéger deux routes, ajouter le CORS
+- `tests/test_casser.py` (4 cas à ajouter), `tests/test_limites.py` (cas limites à compléter), `tests/test_securite.py` (tests à écrire : ils échouent tant qu'ils ne sont pas écrits)
+- `docs/adr/003-securite.md` : deux décisions à justifier
+- `web/index.html` : le fetch et trois améliorations d'ergonomie
+- Le projet contient **2 bugs volontaires** : vos tests doivent les trouver.
