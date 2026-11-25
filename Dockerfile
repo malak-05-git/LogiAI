@@ -4,9 +4,13 @@ WORKDIR /app
 
 COPY requirements.txt ./
 
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --default-timeout=1000 --retries=10 -r requirements.txt
 
-COPY logiai/ ./logiai/
+COPY pyproject.toml /tmp/build/
+COPY logiai/ /tmp/build/logiai/
+
+RUN pip install --no-cache-dir --no-deps /tmp/build && rm -rf /tmp/build
+
 COPY data/ ./data/
 COPY models/ ./models/
 

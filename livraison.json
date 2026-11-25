@@ -1,0 +1,9 @@
+{
+  "distance_km": 15.0,
+  "poids_kg": 8.5,
+  "heure_depart": 10,
+  "pluie_mm": 0.0,
+  "trafic_index": 2.0,
+  "nb_arrets": 2,
+  "type_vehicule": "moto"
+}

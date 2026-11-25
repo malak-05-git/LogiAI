@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "logiai"
+version = "0.1.0"
+description = "LogiAI - Prédiction du risque de retard des livraisons"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "numpy",
+    "scikit-learn>=1.3",
+    "joblib",
+]
+
+[project.optional-dependencies]
+api = [
+    "fastapi",
+    "uvicorn",
+    "pydantic",
+    "python-dotenv",
+]
+dev = [
+    "pytest",
+    "ruff",
+    "httpx",
+]
+
+[project.scripts]
+logiai-predict = "logiai.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["logiai*"]
