@@ -581,3 +581,412 @@ Le mécanisme CORS (*Cross-Origin Resource Sharing*) est une politique de sécur
 * **Tag officiel de l'Atelier 5 :** `tp5` (à poser après fusion de la Pull Request sur `main`).
 * **Lien de la Pull Request Atelier 5 :** À renseigner lors de l'ouverture de la PR de `tp-docker` vers `main` sur GitHub.
 
+
+
+---
+
+# PARTIE III : RÉALISATION DE L'ATELIER 6 — FAIRE DE LOGIAI UN PACKAGE PYTHON
+
+## 22. Présentation et Objectifs de l'Atelier 6
+
+Après avoir conteneurisé l'API LogiAI dans l'Atelier 5 (Docker, Nginx, Compose), l'**Atelier 6** franchit une étape charnière vers la standardisation logicielle et l'industrialisation MLOps : **transformer LogiAI en un véritable package Python distribuable et autonome**.
+
+### Objectifs pédagogiques et industriels :
+1. **Packaging standardisé moderne (PEP 517 / PEP 621) :** Abandonner l'exécution locale dépendante de l'arborescence brute pour formaliser la configuration déclarative du projet via `pyproject.toml` avec le backend `setuptools`.
+2. **Point d'entrée en ligne de commande (CLI `project.scripts`) :** Exposer une commande système `logiai-predict` exécutable directement depuis le terminal pour évaluer une livraison au format JSON sans nécessiter de serveur HTTP actif.
+3. **Découplage strict entre Code Applicatif et Artefacts MLOps :** Rendre la localisation du modèle ML dynamique via la variable d'environnement `LOGIAI_HOME` tout en conservant un repli propre vers le répertoire courant (`Path.cwd()`).
+4. **Validation et étanchéité de la distribution Wheel (`.whl`) :** Générer une archive binaire portable, prouver formellement l'absence des fichiers lourds ou sensibles (`models/`, `data/`, `tests/`, `.env`), et tester l'étanchéité dans un environnement virtuel vierge.
+5. **Conteneurisation minimale et découplée :** Adapter le `Dockerfile` pour installer LogiAI en tant que bibliothèque système dans `site-packages/` et purger le code source du conteneur en production.
+
+---
+
+## 23. Configuration déclarative du package (`pyproject.toml`) et implémentation du CLI
+
+### A. Fichier `pyproject.toml`
+Le fichier de configuration standardisé à la racine du projet respecte les normes PEP 517 et PEP 621 :
+
+```toml
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "logiai"
+version = "0.1.0"
+description = "Système de prédiction de retard de livraison LogiAI"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "numpy",
+    "scikit-learn>=1.3",
+    "joblib",
+]
+
+[project.optional-dependencies]
+api = ["fastapi", "uvicorn", "pydantic"]
+dev = ["pytest", "httpx", "ruff"]
+
+[project.scripts]
+logiai-predict = "logiai.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["logiai*"]
+exclude = ["tests*", "models*", "data*", "web*", "nginx*", "docs*"]
+```
+
+### B. Gestion dynamique du chemin racine (`logiai/config.py`)
+Pour permettre à la bibliothèque de charger le modèle `models/model.joblib` qu'elle soit exécutée depuis la racine du projet, depuis un conteneur Docker ou dans un pipeline CI/CD distant :
+
+```python
+import os
+from pathlib import Path
+
+# Définition dynamique de la racine du projet via LOGIAI_HOME
+ROOT = Path(os.environ.get("LOGIAI_HOME", Path.cwd()))
+DATA_DIR = ROOT / "data"
+MODELS_DIR = ROOT / "models"
+MODEL_PATH = MODELS_DIR / "model.joblib"
+MODEL_INFO_PATH = MODELS_DIR / "model_info.json"
+SEUIL_ALERTE = 0.40
+```
+
+### C. Implémentation de la commande CLI (`logiai/cli.py`)
+Le module CLI charge le fichier JSON passé en argument, initialise `Predictor()`, effectue l'inférence et gère rigoureusement les codes de sortie système :
+
+```python
+import json
+import sys
+from pathlib import Path
+from logiai.config import SEUIL_ALERTE
+from logiai.predict import Predictor
+
+def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+
+    if not argv:
+        print("Erreur : aucun fichier spécifié.")
+        print("Usage : logiai-predict <fichier.json>")
+        return 1
+
+    chemin_fichier = Path(argv[0])
+    if not chemin_fichier.exists() or not chemin_fichier.is_file():
+        print(f"Erreur : fichier introuvable : {chemin_fichier}")
+        return 1
+
+    try:
+        with open(chemin_fichier, "r", encoding="utf-8") as f:
+            donnees = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"Erreur : format JSON invalide ({e})")
+        return 1
+    except Exception as e:
+        print(f"Erreur lors de la lecture du fichier : {e}")
+        return 1
+
+    try:
+        predictor = Predictor()
+    except Exception as e:
+        print(f"Erreur : modèle introuvable. Vérifiez la variable d'environnement LOGIAI_HOME. ({e})")
+        return 1
+
+    try:
+        res = predictor.predict(donnees)
+        p = res["probabilite_retard"]
+        pct = p * 100
+        alerte_suffix = " (ALERTE)" if p >= SEUIL_ALERTE else ""
+        print(f"Probabilité de retard : {pct:.1f} %{alerte_suffix}")
+        return 0
+    except Exception as e:
+        print(f"Erreur lors de la prédiction : {e}")
+        return 1
+
+if __name__ == "__main__":
+    sys.exit(main())
+```
+
+---
+
+## 24. Installation locale et validation de la commande `logiai-predict`
+
+### A. Installation en mode éditable avec extras
+```powershell
+pip install -e ".[api,dev]"
+```
+
+### B. Vérification des métadonnées du package (`pip show logiai`)
+```text
+Name: logiai
+Version: 0.1.0
+Summary: Système de prédiction de retard de livraison LogiAI
+Home-page: 
+Author: 
+Author-email: 
+License: 
+Location: C:\Users\DELL\Downloads\starter-20261028T092813Z-1-001\starter\.venv\Lib\site-packages
+Editable project location: C:\Users\DELL\Downloads\starter-20261028T092813Z-1-001\starter
+Requires: joblib, numpy, pandas, scikit-learn
+Required-by: 
+```
+
+### C. Exécutions réelles de la commande `logiai-predict`
+
+#### 1. Cas nominal sans risque (`livraison.json`)
+```powershell
+$ logiai-predict livraison.json
+Probabilité de retard : 3.9 %
+$ echo $LASTEXITCODE
+0
+```
+
+#### 2. Cas critique avec alerte (`livraison_pluie500.json`)
+```powershell
+$ logiai-predict livraison_pluie500.json
+Probabilité de retard : 100.0 % (ALERTE)
+$ echo $LASTEXITCODE
+0
+```
+*Le seuil d'alerte configuré (0.40 soit 40%) est dépassé, la mention `(ALERTE)` est correctement apposée et le code de retour reste 0 (succès de la commande).*
+
+#### 3. Cas d'erreur : Fichier absent
+```powershell
+$ logiai-predict introuvable.json
+Erreur : fichier introuvable : introuvable.json
+$ echo $LASTEXITCODE
+1
+```
+
+#### 4. Cas d'erreur : Aucun argument
+```powershell
+$ logiai-predict
+Erreur : aucun fichier spécifié.
+Usage : logiai-predict <fichier.json>
+$ echo $LASTEXITCODE
+1
+```
+
+---
+
+## 25. Construction et inspection de la distribution Wheel (`.whl`)
+
+La commande standard `python -m build` a été exécutée pour produire les artefacts binaires et sources dans `dist/` :
+
+```powershell
+python -m build
+```
+
+### A. Artefacts générés
+* **Archive binaire universelle :** `dist/logiai-0.1.0-py3-none-any.whl` (Taille : **7.6 Ko**)
+* **Archive source :** `dist/logiai-0.1.0.tar.gz` (Taille : **6.8 Ko**)
+
+### B. Inspection exhaustive du contenu de l'archive wheel
+```powershell
+python -m zipfile -l dist/logiai-0.1.0-py3-none-any.whl
+```
+
+```text
+File Name                                             Modified             Size
+logiai/__init__.py                             2026-11-25 10:25:28          168
+logiai/cli.py                                  2026-11-25 10:25:34         3165
+logiai/config.py                               2026-11-25 10:14:14          843
+logiai/predict.py                              2026-11-25 09:37:04         2640
+logiai/api/__init__.py                         2026-11-25 09:37:04            0
+logiai/api/main.py                             2026-11-25 09:37:04         4676
+logiai/api/routes.py                           2026-11-25 09:37:04         4070
+logiai/api/schemas.py                          2026-11-25 09:37:04         1821
+logiai/api/security.py                         2026-11-25 09:37:04         2543
+logiai-0.1.0.dist-info/METADATA                2026-11-25 10:29:10         1058
+logiai-0.1.0.dist-info/WHEEL                   2026-11-25 10:29:10           91
+logiai-0.1.0.dist-info/entry_points.txt        2026-11-25 10:29:10           48
+logiai-0.1.0.dist-info/top_level.txt           2026-11-25 10:29:10            7
+logiai-0.1.0.dist-info/RECORD                  2026-11-25 10:29:10         1035
+```
+
+### C. Analyse de conformité MLOps
+* **Absence totale du fichier `model.joblib` :** Le modèle ML n'est pas empaqueté dans la wheel, préservant la légèreté de la distribution logicielle.
+* **Absence des données d'entraînement (`data/`) :** Aucun CSV n'est inclus dans le binaire.
+* **Absence de la suite de tests (`tests/`) et des secrets (`.env`) :** Strictement conformes aux directives de sécurité.
+* **Présence des métadonnées et points d'entrée :** `entry_points.txt` déclare formellement `[console_scripts] logiai-predict = logiai.cli:main`.
+
+---
+
+## 26. Test d'étanchéité dans un environnement virtuel vierge
+
+Pour valider l'indépendance du package par rapport au code source hôte, un environnement virtuel isolé a été provisionné dans `$env:TEMP\test-logiai-venv`.
+
+### A. Installation de la wheel pure
+```powershell
+pip install dist/logiai-0.1.0-py3-none-any.whl
+```
+
+### B. Scénario 1 : Exécution SANS variable d'environnement `LOGIAI_HOME`
+```powershell
+$ logiai-predict $env:TEMP\test_input.json
+Erreur : modèle introuvable. Vérifiez la variable d'environnement LOGIAI_HOME. ([Errno 2] No such file or directory: 'C:\Users\DELL\AppData\Local\Temp\test-logiai-venv\models\model.joblib')
+$ echo $LASTEXITCODE
+1
+```
+*Diagnostic :* Sans `LOGIAI_HOME`, `ROOT` prend pour valeur le répertoire courant qui ne dispose pas du sous-dossier `models/`. L'application intercepte proprement l'exception `FileNotFoundError`, affiche une consigne claire pour l'administrateur et quitte avec le code d'erreur **1**.
+
+### C. Scénario 2 : Exécution AVEC variable d'environnement `LOGIAI_HOME`
+```powershell
+$ $env:LOGIAI_HOME = "C:\Users\DELL\Downloads\starter-20261028T092813Z-1-001\starter"
+$ logiai-predict $env:TEMP\test_input.json
+Probabilité de retard : 3.9 %
+$ echo $LASTEXITCODE
+0
+```
+*Diagnostic :* Dès que `LOGIAI_HOME` pointe vers le répertoire contenant les artefacts MLOps, la désérialisation du modèle et le pipeline de scoring s'exécutent avec succès, retournant le code de statut **0**.
+
+---
+
+## 27. Conteneurisation minimale et découplée (Dockerfile optimisé)
+
+### A. Nouvelle stratégie de build Docker
+Le `Dockerfile` est refactorisé selon les meilleures pratiques industrielles :
+1. Les dépendances de base sont installées depuis `requirements.txt`.
+2. Le package `logiai` est copié temporairement dans `/tmp/build`, compilé et installé comme bibliothèque Python système dans `/usr/local/lib/python3.11/site-packages/`.
+3. Le dossier temporaire `/tmp/build` est intégralement supprimé.
+4. Le dossier applicatif `/app` ne contient plus **aucun code source Python**, mais uniquement les artefacts nécessaires (`models/`, `data/`).
+
+```dockerfile
+FROM python:3.11-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir --default-timeout=100 -r requirements.txt
+
+# Construction et installation du package Python
+COPY pyproject.toml /tmp/build/
+COPY logiai/ /tmp/build/logiai/
+RUN pip install --no-cache-dir --no-deps /tmp/build && rm -rf /tmp/build
+
+COPY data/ data/
+COPY models/ models/
+
+ENV LOGIAI_HOME=/app
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+CMD ["uvicorn", "logiai.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+```
+
+### B. Vérification du conteneur en exécution
+
+#### 1. Emplacement du module Python (`logiai.__file__`)
+```bash
+$ docker compose exec api python -c "import logiai; print(logiai.__file__)"
+/usr/local/lib/python3.11/site-packages/logiai/__init__.py
+```
+*Preuve formelle que LogiAI est bien exécuté en tant que module de la bibliothèque système.*
+
+#### 2. Contenu du répertoire de travail `/app`
+```bash
+$ docker compose exec api ls -la /app
+total 24
+drwxr-xr-x 1 root root 4096 Nov 25 10:45 .
+drwxr-xr-x 1 root root 4096 Nov 25 10:45 ..
+drwxr-xr-x 2 root root 4096 Nov 25 09:37 data
+drwxr-xr-x 2 root root 4096 Nov 25 09:37 models
+-rw-r--r-- 1 root root  280 Nov 25 10:35 requirements.txt
+```
+*Le sous-dossier `logiai/` est totalement absent de `/app`, garantissant qu'aucune source non empaquetée n'est utilisée.*
+
+#### 3. Test de bon fonctionnement de l'API conteneurisée
+```powershell
+$ Invoke-RestMethod -Uri "http://localhost:8001/v1/predict" -Method Post `
+  -Headers @{"X-API-Key"="user-secret-key-123"} `
+  -ContentType "application/json" `
+  -Body '{"distance_km":15.0,"poids_kg":8.5,"heure_depart":10,"pluie_mm":0.0,"trafic_index":2.0,"nb_arrets":2,"type_vehicule":"moto"}'
+
+probabilite_retard alerte seuil model_version
+------------------ ------ ----- -------------
+             0.039  False   0.4 1.0          
+```
+
+---
+
+## 28. Bilan global de la suite de tests Pytest (58 tests validés)
+
+La suite de tests automatisés a été enrichie d'un nouveau module `tests/test_package.py` vérifiant l'installation du package, la déclaration du script console et la résilience du CLI.
+
+```powershell
+python -m pytest
+```
+
+```text
+============================= test session starts =============================
+platform win32 -- Python 3.11.0, pytest-9.2.0, pluggy-1.7.0
+rootdir: C:\Users\DELL\Downloads\starter-20261028T092813Z-1-001\starter
+configfile: pyproject.toml
+collected 58 items
+
+tests/test_api.py ..........                                             [ 17%]
+tests/test_casser.py .....                                               [ 25%]
+tests/test_cors.py ...                                                   [ 31%]
+tests/test_data.py ....                                                  [ 37%]
+tests/test_limites.py .............................                      [ 87%]
+tests/test_model.py ..                                                   [ 91%]
+tests/test_package.py .....                                              [100%]
+
+============================== 58 passed in 5.37s ==============================
+```
+
+Les 58 tests passent avec succès, garantissant le non-régression de l'API, de la sécurité, du prétraitement des données et du packaging.
+
+---
+
+## 29. Réponses approfondies aux 4 questions du TP (Atelier 6)
+
+### 1. Quelle est la différence entre `pip install .` et `pip install -e .` ?
+* **`pip install .` (Installation standard / statique) :** Copie l'intégralité des fichiers du projet dans le dossier `site-packages/` de l'environnement Python. Tout changement ultérieur apporté aux fichiers source dans le répertoire de développement ne sera pas pris en compte tant qu'une réinstallation manuelle n'a pas été effectuée. C'est le mode utilisé en production, en intégration continue et dans les conteneurs finaux.
+* **`pip install -e .` (Installation éditable / mode développement - PEP 660) :** Au lieu de copier les fichiers, cette commande installe un fichier de lien (`.pth` ou loader dynamique setuptools) qui pointe directement vers le dossier source local. Ainsi, toute modification apportée au code Python est répercutée en direct sans nécessiter de réinstallation. Ce mode est indispensable pour le cycle de développement rapide.
+
+### 2. Pourquoi utilise-t-on `>=` dans `pyproject.toml` mais `==` dans `requirements.txt` ?
+Cette dichotomie repose sur la séparation fondamentale entre **spécification d'une bibliothèque réutilisable (Package / Abstract dependencies)** et **définition d'un environnement de déploiement (Application / Concrete dependencies)** :
+* **Dans `pyproject.toml` (`pandas>=2.0`, `scikit-learn>=1.3`) :** On exprime des contraintes minimales de compatibilité logicielle afin de permettre à d'autres projets ou développeurs d'installer `logiai` aux côtés d'autres bibliothèques sans provoquer de conflits de dépendances (*dependency hell*). Si l'on figeait des versions avec `==`, aucune autre application n'utilisant une version mineure différente ne pourrait intégrer `logiai`.
+* **Dans `requirements.txt` (`fastapi==0.162.0`, `pydantic==2.14.1`) :** L'objectif est la **reproductibilité absolue du déploiement**. En production ou dans les images Docker, nous devons garantir que chaque build produit exactement les mêmes binaires, sans risque qu'une mise à jour tierce nocturne n'introduise une régression ou un comportement imprévu.
+
+### 3. Pourquoi le fichier `model.joblib` ne doit-il pas être inclus dans le package Python ?
+L'exclusion du fichier binaire de modèle de l'archive wheel répond à quatre principes fondamentaux de l'ingénierie MLOps moderne :
+1. **Poids et légèreté de l'archive :** Une wheel Python est conçue pour distribuer du code source compilé et léger (~quelques kilo-octets, ici 7.6 Ko). Les modèles de Machine Learning et Deep Learning pèsent couramment de plusieurs dizaines de mégaoctets à plusieurs gigaoctets. Les hébergeurs de packages comme PyPI interdisent ou pénalisent les packages de taille excessive.
+2. **Découplage des cycles de vie (Code vs Modèle) :** Le code d'inférence (FastAPI, CLI, prétraitement) évolue selon un cycle de développement logiciel traditionnel (corrections de bugs, nouvelles routes, refactorings). Le modèle de Machine Learning évolue en continu au rythme de nouveaux jeux de données d'entraînement ou d'un réentraînement automatique périodique (*data drift*). Forcer une nouvelle release du package Python à chaque réentraînement de modèle est une hérésie architecturale.
+3. **Sécurité et portabilité multi-environnements :** Les fichiers sérialisés via `joblib` ou `pickle` peuvent être sensibles à des attaques par injection de code malveillant lors de la désérialisation. De plus, ils dépendent étroitement de la version C/Python de Scikit-Learn et NumPy.
+4. **Bonnes pratiques MLOps :** Les modèles doivent être stockés, tracés et versionnés dans un **Model Registry dédié** (MLflow, AWS S3, Google Cloud Storage, DVC) plutôt que dans un gestionnaire de packages de code source.
+
+### 4. Que se passe-t-il si un utilisateur installe le package avec `pip install logiai` et lance `logiai-predict` sans variable d'environnement et sans dossier `models/` ?
+* **Comportement technique :** La fonction `main()` de `logiai.cli` tente d'instancier la classe `Predictor()`. À l'initialisation, `Predictor` appelle `logiai.config.MODEL_PATH`. En l'absence de variable d'environnement `LOGIAI_HOME`, `ROOT` se replie sur le répertoire de travail courant (`Path.cwd()`).
+* **Résultat obtenu :** Le script recherche le fichier `models/model.joblib` dans le dossier où l'utilisateur a exécuté sa commande. Ne le trouvant pas, `joblib.load()` lève une exception `FileNotFoundError`.
+* **Traitement de l'incident :** Le bloc `try...except` implémenté dans `logiai/cli.py` intercepte proprement l'exception et affiche un message explicite et orienté solution :
+  `Erreur : modèle introuvable. Vérifiez la variable d'environnement LOGIAI_HOME. ([Errno 2] No such file or directory: '.../models/model.joblib')`
+* **Code retour :** Le programme s'interrompt proprement avec le code de sortie `1`, signalant une erreur contrôlée sans crash ni *traceback* Python incompréhensible pour l'utilisateur.
+
+---
+
+## 30. Conclusion et Perspectives d'Industrialisation MLOps
+
+La réalisation de l'Atelier 6 parachève la maturation du projet LogiAI :
+1. **Autonomie et standardisation :** LogiAI peut désormais être consommé sous trois formes distinctes :
+   * En tant que **bibliothèque Python réutilisable** (`import logiai`).
+   * En tant qu'**outil en ligne de commande** autonome (`logiai-predict`).
+   * En tant que **microservice conteneurisé** haute performance orchestré avec Nginx (`docker compose up`).
+2. **Perspectives futures d'industrialisation :**
+   * **Pipeline CI/CD (GitHub Actions) :** Automatisation du linting (`ruff`), de l'exécution des 58 tests (`pytest`), de la construction de la wheel (`python -m build`) et du scan de vulnérabilités (`pip-audit`, `Trivy`).
+   * **Registre privé de packages :** Publication automatique des versions taguées sur un registre PyPI privé d'entreprise (Nexus, JFrog Artifactory ou AWS CodeArtifact).
+   * **Model Registry centralisé :** Intégration de MLflow pour automatiser le téléchargement du dernier modèle en production (`models:/LogiAI/Production`) au démarrage du conteneur via la variable `LOGIAI_HOME`.
+
+---
+
+## 31. Procédure Git et Commit de livraison Atelier 6
+
+* **Branche de travail :** `tp6`
+* **Dépôt GitHub :** `https://github.com/malak-05-git/logiai`
+* **Message de commit standardisé :** `Atelier 6 : package logiai, commande et image Docker`
+* **Étude de conception :** Documentée dans `docs/etude-de-conception.md`
+* **Architecture Decision Record :** Formalisé dans `docs/adr/005-packaging.md`

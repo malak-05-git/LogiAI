@@ -7,3 +7,7 @@ __pycache__/
 data/*.csv
 models/
 *.docx
+*.egg-info/
+build/
+dist/
+
