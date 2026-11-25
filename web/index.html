@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LogiAI : risque de retard</title>
+  <style>
+    :root { --fond:#fafaf7; --texte:#1f2328; --bord:#c9ccd1; --accent:#0b5cad; --ok:#116329; --alerte:#9a6700; --erreur:#b42318; }
+    @media (prefers-color-scheme: dark) {
+      :root { --fond:#16181c; --texte:#e6e8eb; --bord:#3a3f46; --accent:#5aa9ff; --ok:#56d364; --alerte:#e3b341; --erreur:#ff7b72; }
+    }
+    body { margin:0; background:var(--fond); color:var(--texte); font:16px/1.5 system-ui, sans-serif; }
+    main { max-width:640px; margin:0 auto; padding:24px 16px 48px; }
+    h1 { font-size:1.4rem; }
+    form { display:grid; grid-template-columns:1fr 1fr; gap:14px 16px; }
+    .champ { display:flex; flex-direction:column; gap:4px; }
+    .plein { grid-column:1 / -1; }
+    label { font-weight:600; }
+    input, select, button { font:inherit; padding:8px 10px; border:1px solid var(--bord); border-radius:6px; background:transparent; color:inherit; }
+    button { background:var(--accent); color:#fff; border-color:var(--accent); cursor:pointer; }
+    button:disabled { opacity:.6; cursor:progress; }
+    :focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
+    #resultat { margin-top:20px; padding:12px 14px; border-radius:8px; border:1px solid var(--bord); min-height:1.5em; }
+    #resultat.ok { border-color:var(--ok); color:var(--ok); }
+    #resultat.alerte { border-color:var(--alerte); color:var(--alerte); font-weight:600; }
+    #resultat.erreur { border-color:var(--erreur); color:var(--erreur); }
+    .aide { font-size:.85rem; opacity:.8; }
+    @media (max-width:520px) { form { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>LogiAI : risque de retard d'une livraison</h1>
+  <form id="formulaire">
+    <div class="champ"><label for="distance_km">Distance (km)</label>
+      <input id="distance_km" name="distance_km" type="number" step="any" value="120" required></div>
+    <div class="champ"><label for="poids_kg">Poids (kg)</label>
+      <input id="poids_kg" name="poids_kg" type="number" step="any" value="450" required></div>
+    <div class="champ"><label for="heure_depart">Heure de départ (0 à 23)</label>
+      <input id="heure_depart" name="heure_depart" type="number" step="1" value="17" required></div>
+    <div class="champ"><label for="pluie_mm">Pluie (mm)</label>
+      <input id="pluie_mm" name="pluie_mm" type="number" step="any" value="8" required></div>
+    <div class="champ"><label for="trafic_index">Trafic (0 à 10)</label>
+      <input id="trafic_index" name="trafic_index" type="number" step="any" value="7.5" required></div>
+    <div class="champ"><label for="nb_arrets">Nombre d'arrêts</label>
+      <input id="nb_arrets" name="nb_arrets" type="number" step="1" value="4" required></div>
+    <div class="champ"><label for="type_vehicule">Véhicule</label>
+      <select id="type_vehicule" name="type_vehicule">
+        <option value="moto">moto</option>
+        <option value="fourgon">fourgon</option>
+        <option value="camion" selected>camion</option>
+      </select></div>
+    <div class="champ"><label for="cle">Clé API</label>
+      <input id="cle" name="cle" type="password" autocomplete="off" required aria-describedby="aide-cle">
+      <span id="aide-cle" class="aide">Saisie à chaque visite : elle n'est écrite nulle part dans la page.</span></div>
+    <div class="plein"><button id="bouton" type="submit">Évaluer</button></div>
+  </form>
+  <div id="resultat" role="status" aria-live="polite"></div>
+</main>
+
+<script>
+const API_URL = "http://localhost:8000/v1/predict";
+const formulaire = document.getElementById("formulaire");
+const bouton = document.getElementById("bouton");
+const resultat = document.getElementById("resultat");
+
+function afficher(message, classe) {
+  resultat.className = classe;
+  resultat.textContent = message;
+}
+
+async function appelerApi(livraison, cle) {
+  // TODO 4 (bloc 4) : envoyer la livraison à API_URL avec fetch.
+  //  - méthode POST ; en-têtes "Content-Type": "application/json" et "X-API-Key": cle ;
+  //  - corps : JSON.stringify(livraison) ;
+  //  - renvoyer { status: reponse.status, corps: await reponse.json() }.
+  const reponse = await fetch(API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-API-Key": cle,
+    },
+    body: JSON.stringify(livraison),
+  });
+  const corps = await reponse.json();
+  return { status: reponse.status, corps };
+}
+
+function messageErreur(status, corps) {
+  if (status === 401) return "Clé API absente ou invalide.";
+  if (status === 403) return "Vous n'avez pas les droits pour cette action.";
+  if (status === 503) return "Le service n'est pas prêt (modèle non chargé). Réessayez plus tard.";
+  // TODO 5 (ergonomie) : pour un 422, corps.detail est une liste d'erreurs {loc, msg}.
+  //  Affichez une phrase lisible, par exemple "distance_km : Input should be ...".
+  if (status === 422) {
+    if (Array.isArray(corps.detail)) {
+      return corps.detail
+        .map((e) => {
+          const champ = e.loc ? e.loc[e.loc.length - 1] : "champ";
+          return `${champ} : ${e.msg}`;
+        })
+        .join(" | ");
+    }
+    return "Données invalides (erreur 422).";
+  }
+  return `Erreur ${status}.`;
+}
+
+formulaire.addEventListener("submit", async (evenement) => {
+  evenement.preventDefault();
+  const donnees = new FormData(formulaire);
+  const livraison = {
+    distance_km: Number(donnees.get("distance_km")),
+    poids_kg: Number(donnees.get("poids_kg")),
+    heure_depart: Number(donnees.get("heure_depart")),
+    pluie_mm: Number(donnees.get("pluie_mm")),
+    trafic_index: Number(donnees.get("trafic_index")),
+    nb_arrets: Number(donnees.get("nb_arrets")),
+    type_vehicule: donnees.get("type_vehicule"),
+  };
+
+  // TODO 6 (ergonomie) : désactiver le bouton pendant l'appel (bouton.disabled = true)
+  bouton.disabled = true;
+  afficher("Calcul en cours…", "");
+  try {
+    const { status, corps } = await appelerApi(livraison, donnees.get("cle"));
+    if (status === 200) {
+      const pourcentage = (corps.probabilite_retard * 100).toFixed(1);
+      if (corps.alerte) {
+        afficher(`Probabilité de retard : ${pourcentage} %. Alerte : livraison à risque.`, "alerte");
+      } else {
+        afficher(`Probabilité de retard : ${pourcentage} %. Livraison probablement à l'heure.`, "ok");
+      }
+    } else {
+      afficher(messageErreur(status, corps), "erreur");
+    }
+  } catch (erreur) {
+    // TODO 7 (ergonomie) : un message clair pour l'utilisateur (serveur arrêté ? blocage CORS ? voir F12)
+    afficher(`Impossible de joindre l'API (${erreur.message}). Vérifiez qu'Uvicorn tourne sur http://localhost:8000 et que CORS autorise cette origine. Voir console F12.`, "erreur");
+  } finally {
+    // TODO 6 (suite) : réactiver le bouton quand l'appel est terminé (bloc finally)
+    bouton.disabled = false;
+  }
+});
+</script>
+</body>
+</html>

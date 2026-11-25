@@ -3,7 +3,9 @@
 Lancement :
     streamlit run app_streamlit.py
 """
+
 import os
+
 import requests
 import streamlit as st
 
@@ -24,7 +26,9 @@ DEFAULT_API_URL = os.getenv("LOGIAI_API_URL", "http://localhost:8000")
 
 with st.sidebar:
     st.header("⚙️ Configuration API")
-    api_base_url = st.text_input("URL de base de l'API :", value=DEFAULT_API_URL).rstrip("/")
+    api_base_url = st.text_input(
+        "URL de base de l'API :", value=DEFAULT_API_URL
+    ).rstrip("/")
     predict_endpoint = f"{api_base_url}/v1/predict"
     health_endpoint = f"{api_base_url}/health"
 
@@ -118,7 +122,9 @@ payload = {
 
 st.markdown("---")
 
-if st.button("🚀 Prédire le risque de retard", type="primary", use_container_width=True):
+if st.button(
+    "🚀 Prédire le risque de retard", type="primary", use_container_width=True
+):
     with st.spinner("Interrogation de l'API LogiAI..."):
         try:
             response = requests.post(predict_endpoint, json=payload, timeout=5)
@@ -161,7 +167,9 @@ if st.button("🚀 Prédire le risque de retard", type="primary", use_container_
                 st.error(f"🛑 **Erreur 503 — Modèle indisponible :** {err_detail}")
 
             else:
-                st.error(f"Erreur inattendue HTTP {response.status_code} : {response.text}")
+                st.error(
+                    f"Erreur inattendue HTTP {response.status_code} : {response.text}"
+                )
 
         except requests.exceptions.ConnectionError:
             st.error(
@@ -172,6 +180,8 @@ if st.button("🚀 Prédire le risque de retard", type="primary", use_container_
                 "```"
             )
         except requests.exceptions.Timeout:
-            st.error("⏱️ **Délai d'attente dépassé** lors de la communication avec l'API.")
-        except Exception as exc:
+            st.error(
+                "⏱️ **Délai d'attente dépassé** lors de la communication avec l'API."
+            )
+        except Exception as exc:  # noqa: BLE001
             st.error(f"Une erreur imprévue est survenue : {exc}")
